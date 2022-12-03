@@ -2,6 +2,7 @@
 Straw, the simple tool to suck the config out of your Slurm beverage!
 """
 import sys
+import os
 import socket
 
 from dataclasses import dataclass
@@ -98,7 +99,7 @@ class Auth:
             return pack('!II', self.plugin_id, len(self.cred)+1) + self.cred + b'\x00'
         elif self.plugin_id == PLUGIN_AUTH_JWT:
             # packstr(token) + packstr(NULL)
-            return pack('!II', self.plugin_id, len(self.cred)+1) + bytes(self.cred) + b'\x00' + b'\x00\x00\x00\x00'
+            return pack('!II', self.plugin_id, len(self.cred)+1) + bytes(self.cred, 'utf-8') + b'\x00' + b'\x00\x00\x00\x00'
 
 
 @dataclass
@@ -166,7 +167,12 @@ def fetch_config(server):
     print(repr(h))
     header = Header(protocol_version=protocol_version).pack()
     body = Body().pack()
-    auth = Auth().pack(body)
+    try:
+        token = os.environ['SLURM_JWT']
+    except:
+        sys.exit('SLURM_JWT undefined')
+    #auth = Auth().pack(body)
+    auth = Auth(cred=token, plugin_id=PLUGIN_AUTH_JWT).pack(body)
     print(f'Header ({len(header)}):')
     hexdump(header)
     print(f'Auth: ({len(auth)})')
