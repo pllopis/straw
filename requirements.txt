@@ -1,4 +1,4 @@
-Cython==0.29.32
-dataclasses==0.8
+Cython
+dataclasses
 pymunge==0.1.3
 pyslurm @ git+https://github.com/PySlurm/pyslurm.git@467667e11e1775f9bd0be1e60444de6eb22e385b

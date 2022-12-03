@@ -153,7 +153,7 @@ def parse_msg(msg):
     h = Header().unpack(msg[:16], protocol_version)
     # Check auth
     if h.msg_type != RESPONSE_CONFIG:
-        sys.exit(f'Response type ({h.msg_type}) not what we expected ({RESPONSE_CONFIG})', 'Make sure you run as slurm user or root')
+        sys.exit(f'Response type ({h.msg_type}) not what we expected ({RESPONSE_CONFIG}). Make sure you run as slurm user or root')
     print(f'Got a response body of length {h.body_length}:')
     return b''
 
