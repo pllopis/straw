@@ -25,8 +25,10 @@ the slurm user or root.
 
 ```
 python straw.py [--auth=<auth_method>] <slurmctld.domain.com> <slurm version>
-Where auth_method is either munge or jwt. The default auth method is munge.
 ```
+
+Where auth\_method is either munge or jwt. The default auth method is munge.  
+The slurm version should include the major release (first two parts), e.g. `22.05`.
 
 Both the hostname of the slurmctld and the slurm version are mandatory. The slurm version should match that of
 the slurmctld server, as this will determine the Slurm protocol version that straw will use.
