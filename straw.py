@@ -19,6 +19,7 @@ SLURM_PROTOCOL_VERSION = {
 HASH_K12 = 2
 HASH_K12_LEN = 32
 PLUGIN_AUTH_MUNGE = 0x0065
+PLUGIN_AUTH_JWT = 0x0066
 REQUEST_CONFIG = 0x07df
 RESPONSE_CONFIG = REQUEST_CONFIG+1
 
@@ -69,10 +70,14 @@ class Header:
 
 @dataclass
 class Auth:
+    """
+    To use with munge, use parameters by default. Munge cred will be generated automatically.
+    To use with JWT, use Auth(cred=jwt_token, plugin_id=PLUGIN_AUTH_JWT).
+    """
     cred: str = None
     plugin_id: int = PLUGIN_AUTH_MUNGE
 
-    def _get_cred(self, body):
+    def _get_munge_cred(self, body):
         custom_string = pack('!H', REQUEST_CONFIG)
         print('custom str:')
         hexdump(custom_string)
@@ -88,8 +93,12 @@ class Auth:
         return cred
 
     def pack(self, body):
-        self.cred = self._get_cred(body)
-        return pack('!II', self.plugin_id, len(self.cred)+1) + self.cred + b'\x00'
+        if self.plugin_id == PLUGIN_AUTH_MUNGE:
+            self.cred = self._get_munge_cred(body)
+            return pack('!II', self.plugin_id, len(self.cred)+1) + self.cred + b'\x00'
+        elif self.plugin_id == PLUGIN_AUTH_JWT:
+            # packstr(token) + packstr(NULL)
+            return pack('!II', self.plugin_id, len(self.cred)+1) + bytes(self.cred) + b'\x00' + b'\x00\x00\x00\x00'
 
 
 @dataclass
