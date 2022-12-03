@@ -21,7 +21,7 @@ and greatly simplifying containerisation of slurm tools.
 ## Usage
 
 Running this tool requires python 3. If you're using munge to authenticate, you must run this tool as either
-the slurm user or root.
+the slurm user or root. The slurmctld needs to have configless mode enabled as well.
 
 ```
 python straw.py [--auth=<auth_method>] <slurmctld.domain.com> <slurm version>
