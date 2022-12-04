@@ -64,48 +64,9 @@ class Header:
                           self.address_ss_family)
         return header
 
-    def unpack(self, header, protocol_version):
-        self.protocol_version, = unpack('!H', header[:2])
-        if self.protocol_version != protocol_version:
-            sys.exit(f'Protocol version response from server ({self.protocol_version}) is different to the protocol version requested ({protocol_version}).')
-        if protocol_version >= SLURM_PROTOCOL_VERSION['22.05']:
-            _, _, self.msg_type, self.body_length, _, _, _ = unpack('!HHHIHHH', header)
-        elif protocol_version >= SLURM_PROTOCOL_VERSION['20.11']:
-            _, _, _, self.msg_type, self.body_length, _, _, _ = unpack('!HHHHIHHH', header)
-        return self
 
 @dataclass
-class Packer:
-    """
-    Base class that works as a thin layer over struct.(un)pack calls,
-    and keeps track of how many bytes have been unpacked.
-    """
-
-    protocol_version: int = None
-    unpack_data: bytes = None
-
-    # Internal
-    _unpack_offset: int = 0
-
-    def unpack(self, fmt):
-        unpack_sz = calcsize(fmt)
-        res = unpack(fmt, self.unpack_data[self._unpack_offset:self._unpack_offset+unpack_sz])[0]
-        self._unpack_offset += unpack_sz
-        return res
-
-    def unpackstr(self):
-        str_len = self.unpack('!I')
-        if (str_len > 0):
-            # str_len accounts for trailing '\0'
-            s = self.unpack_data[self._unpack_offset:self._unpack_offset+str_len-1]
-            self._unpack_offset += str_len
-            return s
-        else:
-            return None
-
-
-@dataclass
-class Auth(Packer):
+class Auth:
     """
     To use with munge, use Auth(plugin_id=PLUGIN_AUTH_MUNGE). Munge cred will be generated automatically.
     To use with JWT, use Auth(cred=jwt_token, plugin_id=PLUGIN_AUTH_JWT).
@@ -139,15 +100,6 @@ class Auth(Packer):
             # packstr(token) + packstr(NULL)
             return pack('!II', self.plugin_id, len(self.cred)+1) + bytes(self.cred, 'utf-8') + b'\x00' + b'\x00\x00\x00\x00'
 
-    def parse(self):
-        self.plugin_id = self.unpack('!I')
-        if self.plugin_id == PLUGIN_AUTH_MUNGE:
-            self.cred = self.unpackstr()
-            logging.debug(f'Munge cred: {self.cred}')
-        if self.plugin_id == PLUGIN_AUTH_JWT:
-            token = self.unpackstr()
-            user = self.unpackstr()
-
 
 @dataclass
 class Body:
@@ -155,6 +107,59 @@ class Body:
 
     def pack(self):
         return pack('!I', self.req_flags)
+
+
+@dataclass
+class SlurmMessage:
+    data: bytes
+
+    header: Header = Header()
+    auth: Auth = Header()
+    body: Body = Body()
+
+    _unpack_offset: int = 0
+
+    def unpack(self, fmt):
+        """
+        Akin to struct.unpack, but keep track of which bytes we've unpacked from self.data (in self._unpack_offset).
+        """
+        unpack_sz = calcsize(fmt)
+        res = unpack(fmt, self.data[self._unpack_offset:self._unpack_offset+unpack_sz])
+        self._unpack_offset += unpack_sz
+        return res
+
+    def unpackstr(self):
+        """
+        Unpacks a string <uint32_t><str><\0>, where len of str is given by the first uint32_t size.
+        Keep track of the offset in self.data
+        """
+        str_len, = self.unpack('!I')
+        if (str_len > 0):
+            # str_len accounts for trailing '\0'
+            s = self.data[self._unpack_offset:self._unpack_offset+str_len-1]
+            self._unpack_offset += str_len
+            return s
+        else:
+            return None
+
+    def unpack_header(self):
+        self.header.protocol_version, = self.unpack('!H')
+        if self.header.protocol_version != protocol_version:
+            sys.exit(f'Protocol version response from server ({self.header.protocol_version}) is different to the protocol version requested ({protocol_version}).')
+        if protocol_version >= SLURM_PROTOCOL_VERSION['22.05']:
+            _, self.header.msg_type, self.header.body_length, _, _, _ = self.unpack('!HHIHHH')
+        elif protocol_version >= SLURM_PROTOCOL_VERSION['20.11']:
+            _, _, self.header.msg_type, self.header.body_length, _, _, _ = self.unpack('!HHHIHHH')
+
+    def unpack_auth(self):
+        self.auth.plugin_id, = self.unpack('!I')
+        if self.auth.plugin_id == PLUGIN_AUTH_MUNGE:
+            self.auth.cred = self.unpackstr()
+            logging.debug(f'Munge cred: {self.auth.cred}')
+        if self.auth.plugin_id == PLUGIN_AUTH_JWT:
+            token = self.unpackstr()
+            user = self.unpackstr()
+
 
 def hexdump(data):
     # Make sure the input data is a bytestring
@@ -216,12 +221,15 @@ def send_recv(server, payload):
         response = bytes(sfile.read(resp_len))
     return response
 
-def parse_msg(msg):
-    h = Header().unpack(msg[:16], protocol_version)
-    a = Auth(unpack_data=msg[16:]).parse()
-    if h.msg_type != RESPONSE_CONFIG:
-        sys.exit(f'Response type ({h.msg_type}) not what we expected ({RESPONSE_CONFIG}). Make sure you run as slurm user or root')
-    logging.debug(f'Got a response body of length {h.body_length}:')
+def parse_msg(data):
+    msg = SlurmMessage(data=data)
+    msg.unpack_header()
+    msg.unpack_auth()
+    #h = Header().unpack(msg[:16], protocol_version)
+    #a = Auth(data=msg[16:]).parse()
+    if msg.header.msg_type != RESPONSE_CONFIG:
+        sys.exit(f'Response type ({msg.header.msg_type}) not what we expected ({RESPONSE_CONFIG}). Make sure you run as slurm user or root')
+    logging.debug(f'Got a response body of length {msg.header.body_length}:')
     return b''
 
 def save_config(response):
