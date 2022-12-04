@@ -6,6 +6,7 @@ import os
 import socket
 import argparse
 import re
+import logging
 
 from dataclasses import dataclass
 from pymunge import MungeContext, UID_ANY, GID_ANY
@@ -82,13 +83,13 @@ class Auth:
 
     def _get_munge_cred(self, body):
         custom_string = pack('!H', REQUEST_CONFIG)
-        print('custom str:')
-        hexdump(custom_string)
-        print('hash input:')
-        hexdump(body)
+        logging.debug('custom str:')
+        logging.debug(hexdump(custom_string))
+        logging.debug('hash input:')
+        logging.debug(hexdump(body))
         slurm_hash = pack('B32s', HASH_K12, bytes(KangarooTwelve(body, custom_string, HASH_K12_LEN)))
-        print('raw hash:')
-        hexdump(slurm_hash)
+        logging.debug('raw hash:')
+        logging.debug(hexdump(slurm_hash))
         with MungeContext() as ctx:
             ctx.uid_restriction = UID_ANY
             ctx.gid_restriction = GID_ANY
@@ -141,7 +142,7 @@ def hexdump(data):
         addr += 16
 
     # Return the list of lines as a string, separated by newlines
-    print("\n".join(lines))
+    return "\n".join(lines)
 
 class StrawConnectionError(Exception):
     pass
@@ -158,19 +159,19 @@ def send_recv(server, payload):
     payload_msg = pack('!I', len(payload)) + payload
 
     host, port = parse_server(server)
-    print(f'Trying {host}:{port}...')
+    logging.info(f'Trying {host}:{port}...')
     try:
         s = socket.create_connection((host, port))
         s.sendall(payload_msg)
     except Exception as ex:
-        print(ex)
+        logging.error(ex)
         raise StrawConnectionError()
 
     with s, s.makefile(mode='rb') as sfile:
         recv_len = sfile.read(4)
-        print('recvd ', len(recv_len), 'bytes')
+        logging.debug(f'recvd {len(recv_len)} bytes')
         resp_len = int(unpack('!I', recv_len)[0])
-        print('Read a message of length', resp_len)
+        logging.debug(f'Read a message of length {resp_len}')
         response = bytes(sfile.read(resp_len))
     return response
 
@@ -179,19 +180,19 @@ def parse_msg(msg):
     # Check auth
     if h.msg_type != RESPONSE_CONFIG:
         sys.exit(f'Response type ({h.msg_type}) not what we expected ({RESPONSE_CONFIG}). Make sure you run as slurm user or root')
-    print(f'Got a response body of length {h.body_length}:')
+    logging.debug(f'Got a response body of length {h.body_length}:')
     return b''
 
 def save_config(response):
     pass
 
 def fetch_config(servers, auth):
-    print('Protocol version:', protocol_version)
+    logging.debug(f'Using protocol version: {protocol_version}')
     h = Header(protocol_version=protocol_version)
-    print(repr(h))
+    logging.debug(repr(h))
     header = Header(protocol_version=protocol_version).pack()
     body = Body().pack()
-    print(f'Using authentication method: {auth}')
+    logging.info(f'Using authentication method: {auth}')
     if auth == 'jwt':
         try:
             token = os.environ['SLURM_JWT']
@@ -200,23 +201,23 @@ def fetch_config(servers, auth):
         auth = Auth(cred=token, plugin_id=PLUGIN_AUTH_JWT).pack(body)
     else:
         auth = Auth(plugin_id=PLUGIN_AUTH_MUNGE).pack(body)
-    print(f'Header ({len(header)}):')
-    hexdump(header)
-    print(f'Auth: ({len(auth)})')
-    hexdump(auth)
-    print(f'Body: ({len(body)})')
-    hexdump(body)
+    logging.debug(f'Header ({len(header)}):')
+    logging.debug(hexdump(header))
+    logging.debug(f'Auth: ({len(auth)})')
+    logging.debug(hexdump(auth))
+    logging.debug(f'Body: ({len(body)})')
+    logging.debug(hexdump(body))
     payload = header + auth + body
     payload_msg = pack('!I', len(payload)) + payload
-    print(f'Full message: ({len(payload_msg)})')
-    hexdump(payload_msg)
+    logging.debug(f'Full message: ({len(payload_msg)})')
+    logging.debug(hexdump(payload_msg))
     response_msg = None
     for server in servers:
         try:
             response_msg = send_recv(server, payload)
         except StrawConnectionError as err:
-            print(err)
-            print('Connection error. Retrying with next server.')
+            logging.info(err)
+            logging.error('Connection error. Retrying with next server.')
         else:
             # Only bother retrying further servers for connection errors
             break
@@ -224,10 +225,10 @@ def fetch_config(servers, auth):
     if not response_msg:
         sys.exit('Unable to connect and no more servers to try')
 
-    hexdump(response_msg)
+    logging.debug(hexdump(response_msg))
     response = parse_msg(response_msg)
-    print('Response raw:')
-    hexdump(response)
+    logging.debug('Response raw:')
+    logging.debug(hexdump(response))
     save_config(response)
 
 def parse_args():
@@ -250,7 +251,19 @@ def parse_args():
 
 def main():
     args = parse_args()
-    print(repr(args))
+
+    if not args.verbose:
+        # default logging level
+        loglevel = logging.ERROR
+    elif args.verbose >= 2:
+        loglevel = logging.DEBUG
+    elif args.verbose >= 1:
+        loglevel = logging.INFO
+    logging.getLogger().setLevel(loglevel)
+    logging.basicConfig(format='%(message)s', datefmt='%m/%d/%Y %H:%M:%S %Z')
+
+    logging.debug(repr(args))
+
     global protocol_version
     protocol_version = SLURM_PROTOCOL_VERSION[args.version]
     fetch_config(args.server, args.auth)
