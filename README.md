@@ -1,5 +1,7 @@
 # 🥤 Straw for your Slurm beverage!
 
+# 🚧 WIP
+
 Straw is a simple and minimalistic one-shot cli tool that fetches the Slurm config files from a Slurm server running the slurmctld.
 It can greatly simplify the deployment of (containerised) environments that interact as clients with Slurm clusters by removing the need
 for maintaining munge keys, Slurm config files, as well as slurmd, and munge daemons.
