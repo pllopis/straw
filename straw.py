@@ -31,7 +31,7 @@ protocol_version = None
 def list_protocol_versions():
     for ver in SLURM_PROTOCOL_VERSION.keys():
         print(ver)
-        
+
 @dataclass
 class Header:
     protocol_version:  int = 0
@@ -74,14 +74,43 @@ class Header:
             _, _, _, self.msg_type, self.body_length, _, _, _ = unpack('!HHHHIHHH', header)
         return self
 
+@dataclass
+class Packer:
+    """
+    Base class that works as a thin layer over struct.(un)pack calls,
+    and keeps track of how many bytes have been unpacked.
+    """
+
+    protocol_version: int = None
+    unpack_data: bytes = None
+
+    # Internal
+    _unpack_offset: int = 0
+
+    def unpack(self, fmt):
+        unpack_sz = calcsize(fmt)
+        res = unpack(fmt, self.unpack_data[self._unpack_offset:self._unpack_offset+unpack_sz])[0]
+        self._unpack_offset += unpack_sz
+        return res
+
+    def unpackstr(self):
+        str_len = self.unpack('!I')
+        if (str_len > 0):
+            # str_len accounts for trailing '\0'
+            s = self.unpack_data[self._unpack_offset:self._unpack_offset+str_len-1]
+            self._unpack_offset += str_len
+            return s
+        else:
+            return None
+
 
 @dataclass
-class Auth:
+class Auth(Packer):
     """
     To use with munge, use Auth(plugin_id=PLUGIN_AUTH_MUNGE). Munge cred will be generated automatically.
     To use with JWT, use Auth(cred=jwt_token, plugin_id=PLUGIN_AUTH_JWT).
     """
-    plugin_id: int
+    plugin_id: int = None
     cred: str = None
 
     def _get_munge_cred(self, body):
@@ -109,6 +138,15 @@ class Auth:
         elif self.plugin_id == PLUGIN_AUTH_JWT:
             # packstr(token) + packstr(NULL)
             return pack('!II', self.plugin_id, len(self.cred)+1) + bytes(self.cred, 'utf-8') + b'\x00' + b'\x00\x00\x00\x00'
+
+    def parse(self):
+        self.plugin_id = self.unpack('!I')
+        if self.plugin_id == PLUGIN_AUTH_MUNGE:
+            self.cred = self.unpackstr()
+            logging.debug(f'Munge cred: {self.cred}')
+        if self.plugin_id == PLUGIN_AUTH_JWT:
+            token = self.unpackstr()
+            user = self.unpackstr()
 
 
 @dataclass
@@ -180,7 +218,7 @@ def send_recv(server, payload):
 
 def parse_msg(msg):
     h = Header().unpack(msg[:16], protocol_version)
-    # Check auth
+    a = Auth(unpack_data=msg[16:]).parse()
     if h.msg_type != RESPONSE_CONFIG:
         sys.exit(f'Response type ({h.msg_type}) not what we expected ({RESPONSE_CONFIG}). Make sure you run as slurm user or root')
     logging.debug(f'Got a response body of length {h.body_length}:')
@@ -245,7 +283,7 @@ def parse_args():
     list_parser.add_argument('-l', '--list', action='store_true')
     list_versions = False
     try:
-        args = list_parser.parse_args()
+        args, _ = list_parser.parse_known_args()
         if args.list:
             list_versions = True
     except:
