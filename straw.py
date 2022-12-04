@@ -17,7 +17,6 @@ SLURM_PROTOCOL_VERSION = {
         '22.05': (38 << 8) | 0,
         '21.08': (37 << 8) | 0,
         '20.11': (36 << 8) | 0,
-        'min': (36 << 8) | 0,
         }
 
 HASH_K12 = 2
@@ -29,6 +28,10 @@ RESPONSE_CONFIG = REQUEST_CONFIG+1
 
 protocol_version = None
 
+def list_protocol_versions():
+    for ver in SLURM_PROTOCOL_VERSION.keys():
+        print(ver)
+        
 @dataclass
 class Header:
     protocol_version:  int = 0
@@ -237,6 +240,22 @@ def parse_args():
             raise ValueError('Slurm major version must be specified (e.g. 22.05)')
         return arg
 
+    # First parser just for listing protocol versions
+    list_parser = argparse.ArgumentParser(add_help=False)
+    list_parser.add_argument('-l', '--list', action='store_true')
+    list_versions = False
+    try:
+        args = list_parser.parse_args()
+        if args.list:
+            list_versions = True
+    except:
+        pass
+
+    if list_versions:
+        list_protocol_versions()
+        sys.exit(0)
+
+    # Main parser
     parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     parser.add_argument('server', type=str, nargs='+',
                         help='slurmctld server in server[:port] notation')
@@ -247,6 +266,8 @@ def parse_args():
     parser.add_argument('-v', '--verbose', action='count',
                         help='Increase output verbosity. Rrepetitions allowed.')
     parser.add_argument('-V', '--version', action='version', version='%(prog)s 0.1')
+    parser.add_argument('-l', '--list', action='store_true',
+                             help='List available protocol versions')
     return parser.parse_args()
 
 def main():
