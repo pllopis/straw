@@ -1,4 +1,4 @@
-# Straw for your Slurm beverage!
+# 🥤 Straw for your Slurm beverage!
 
 Straw is a simple and minimalistic one-shot cli tool that fetches the slurm config files from a Slurm server running the slurmctld.
 It can greatly simplify the deployment of (containerised) environments that interact as clients with Slurm clusters by removing the need
