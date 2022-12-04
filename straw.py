@@ -4,6 +4,8 @@ Straw, the simple tool to suck the config out of your Slurm beverage!
 import sys
 import os
 import socket
+import argparse
+import re
 
 from dataclasses import dataclass
 from pymunge import MungeContext, UID_ANY, GID_ANY
@@ -72,11 +74,11 @@ class Header:
 @dataclass
 class Auth:
     """
-    To use with munge, use parameters by default. Munge cred will be generated automatically.
+    To use with munge, use Auth(plugin_id=PLUGIN_AUTH_MUNGE). Munge cred will be generated automatically.
     To use with JWT, use Auth(cred=jwt_token, plugin_id=PLUGIN_AUTH_JWT).
     """
+    plugin_id: int
     cred: str = None
-    plugin_id: int = PLUGIN_AUTH_MUNGE
 
     def _get_munge_cred(self, body):
         custom_string = pack('!H', REQUEST_CONFIG)
@@ -95,7 +97,10 @@ class Auth:
 
     def pack(self, body):
         if self.plugin_id == PLUGIN_AUTH_MUNGE:
-            self.cred = self._get_munge_cred(body)
+            try:
+                self.cred = self._get_munge_cred(body)
+            except Exception as err:
+                sys.exit(f'Failed to generate munge credential:\n{err}')
             return pack('!II', self.plugin_id, len(self.cred)+1) + self.cred + b'\x00'
         elif self.plugin_id == PLUGIN_AUTH_JWT:
             # packstr(token) + packstr(NULL)
@@ -138,10 +143,29 @@ def hexdump(data):
     # Return the list of lines as a string, separated by newlines
     print("\n".join(lines))
 
+class StrawConnectionError(Exception):
+    pass
+
 def send_recv(server, payload):
+    def parse_server(server):
+        """"Parse server[:port]"""
+        vals = server.split(':')
+        if len(vals) > 1:
+            return vals[0], vals[1]
+        else:
+            return vals[0], 6817
+
     payload_msg = pack('!I', len(payload)) + payload
-    s = socket.create_connection((server, 6817))
-    s.sendall(payload_msg)
+
+    host, port = parse_server(server)
+    print(f'Trying {host}:{port}...')
+    try:
+        s = socket.create_connection((host, port))
+        s.sendall(payload_msg)
+    except Exception as ex:
+        print(ex)
+        raise StrawConnectionError()
+
     with s, s.makefile(mode='rb') as sfile:
         recv_len = sfile.read(4)
         print('recvd ', len(recv_len), 'bytes')
@@ -161,18 +185,21 @@ def parse_msg(msg):
 def save_config(response):
     pass
 
-def fetch_config(server):
+def fetch_config(servers, auth):
     print('Protocol version:', protocol_version)
     h = Header(protocol_version=protocol_version)
     print(repr(h))
     header = Header(protocol_version=protocol_version).pack()
     body = Body().pack()
-    try:
-        token = os.environ['SLURM_JWT']
-    except:
-        sys.exit('SLURM_JWT undefined')
-    #auth = Auth().pack(body)
-    auth = Auth(cred=token, plugin_id=PLUGIN_AUTH_JWT).pack(body)
+    print(f'Using authentication method: {auth}')
+    if auth == 'jwt':
+        try:
+            token = os.environ['SLURM_JWT']
+        except:
+            sys.exit('Auth method jwt requested but SLURM_JWT undefined')
+        auth = Auth(cred=token, plugin_id=PLUGIN_AUTH_JWT).pack(body)
+    else:
+        auth = Auth(plugin_id=PLUGIN_AUTH_MUNGE).pack(body)
     print(f'Header ({len(header)}):')
     hexdump(header)
     print(f'Auth: ({len(auth)})')
@@ -183,17 +210,50 @@ def fetch_config(server):
     payload_msg = pack('!I', len(payload)) + payload
     print(f'Full message: ({len(payload_msg)})')
     hexdump(payload_msg)
-    response_msg = send_recv(server, payload)
+    response_msg = None
+    for server in servers:
+        try:
+            response_msg = send_recv(server, payload)
+        except StrawConnectionError as err:
+            print(err)
+            print('Connection error. Retrying with next server.')
+        else:
+            # Only bother retrying further servers for connection errors
+            break
+
+    if not response_msg:
+        sys.exit('Unable to connect and no more servers to try')
+
     hexdump(response_msg)
     response = parse_msg(response_msg)
     print('Response raw:')
     hexdump(response)
     save_config(response)
 
+def parse_args():
+    def major_version_match(arg):
+        if not re.fullmatch(r'[0-9]{2,}\.[0-9]+', arg):
+            raise ValueError('Slurm major version must be specified (e.g. 22.05)')
+        return arg
+
+    parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+    parser.add_argument('server', type=str, nargs='+',
+                        help='slurmctld server in server[:port] notation')
+    parser.add_argument('version', type=major_version_match,
+                        help='Slurm major version that corresponds to that of the slurmctld server (e.g. 22.05)')
+    parser.add_argument('--auth', choices=['munge', 'jwt'], default='jwt',
+                        help='Authentication method')
+    parser.add_argument('-v', '--verbose', action='count',
+                        help='Increase output verbosity. Rrepetitions allowed.')
+    parser.add_argument('-V', '--version', action='version', version='%(prog)s 0.1')
+    return parser.parse_args()
+
 def main():
+    args = parse_args()
+    print(repr(args))
     global protocol_version
-    protocol_version = SLURM_PROTOCOL_VERSION[sys.argv[2]]
-    fetch_config(sys.argv[1])
+    protocol_version = SLURM_PROTOCOL_VERSION[args.version]
+    fetch_config(args.server, args.auth)
 
 if __name__ == '__main__':
     main()
