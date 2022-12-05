@@ -144,7 +144,11 @@ class SlurmMessage:
             for i in range(0, config_file_count):
                 file_exists, = self._unpack('B')
                 filename = self._unpackstr()
+                if filename:
+                    filename = filename.decode('utf-8')
                 content = self._unpackstr()
+                if content:
+                    content = content.decode('utf-8')
                 logging.debug(f'filename: {filename}, exists: {bool(file_exists)}')
                 if file_exists:
                     lst.append((filename, content))
@@ -162,7 +166,7 @@ class SlurmMessage:
                 self.body = ResponseConfigBody()
                 logging.debug(f'Got a response body of length {self.header.body_length}:')
                 self.body.config_files = self._unpack_list()
-                self.body.spool_dir = self._unpackstr()
+                self.body.spool_dir = self._unpackstr().decode('utf-8')
             elif self.header.protocol_version >= SLURM_PROTOCOL_VERSION['20.11']:
                 raise NotImplementedError('Fetching config from Slurm 21.08 > version >= 20.11 not yet implemented')
             else:
@@ -327,12 +331,17 @@ def parse_msg(data):
     msg.unpack()
     return msg
 
-def save_config(msg):
-    logging.debug(f'spool dir: {msg.body.spool_dir}')
+def save_config(msg, output_dir):
     for file in msg.body.config_files:
-        logging.debug(f'filename: {file[0]}\ncontent: {file[1]}')
+        filepath = f'{output_dir}/{file[0]}'
+        content = str(file[1])
+        try:
+            with open(filepath, 'w') as f:
+                f.write(content)
+        except Exception as err:
+            logging.error(f'Unable to write {filepath}: {err}')
 
-def fetch_config(servers, auth):
+def fetch_config(servers, auth, output_dir='./'):
     logging.debug(f'Using protocol version: {protocol_version}')
     payload = SlurmMessage().RequestConfigMsg(protocol_version=protocol_version, auth_method=auth)
     response_msg = None
@@ -351,7 +360,9 @@ def fetch_config(servers, auth):
 
     logging.debug(hexdump(response_msg))
     slurm_msg = parse_msg(response_msg)
-    save_config(slurm_msg)
+    if slurm_msg.body.spool_dir:
+        logging.info(f'SlurmdSpoolDir={slurm_msg.body.spool_dir}')
+    save_config(slurm_msg, output_dir)
 
 def parse_args():
     def major_version_match(arg):
@@ -382,6 +393,8 @@ def parse_args():
                         help='Slurm major version that corresponds to that of the slurmctld server (e.g. 22.05)')
     parser.add_argument('--auth', choices=['munge', 'jwt'], default='jwt',
                         help='Authentication method')
+    parser.add_argument('-o', '--output-dir', default='./',
+                        help='Existing output directory where config files will be saved')
     parser.add_argument('-v', '--verbose', action='count',
                         help='Increase output verbosity. Rrepetitions allowed.')
     parser.add_argument('-V', '--version', action='version', version='%(prog)s 0.1')
@@ -406,7 +419,7 @@ def main():
 
     global protocol_version
     protocol_version = SLURM_PROTOCOL_VERSION[args.version]
-    fetch_config(args.server, args.auth)
+    fetch_config(args.server, args.auth, args.output_dir)
 
 if __name__ == '__main__':
     main()
