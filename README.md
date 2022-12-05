@@ -1,7 +1,5 @@
 # 🥤 Straw for your Slurm beverage!
 
-# 🚧 WIP
-
 Straw is a simple and minimalistic one-shot cli tool that fetches the Slurm config files from a Slurm server running the slurmctld.
 It can greatly simplify the deployment of (containerised) environments that interact as clients with Slurm clusters by removing the need
 for maintaining munge keys, Slurm config files, as well as slurmd, and munge daemons.
@@ -46,7 +44,7 @@ Just add straw to your container and call it early on during initialisation, ens
 
 ## Requirements
 
-Running this tool requires python 3, and a few libraries listed in the requirements.txt.
+Running this tool requires python 3.
 
 If you're using munge to authenticate, you must run this tool as either
 the Slurm user, or root. The slurmctld needs to have [configless mode](https://slurm.schedmd.com/configless_slurm.html) enabled as well.  
@@ -55,13 +53,24 @@ Optionally, for JWT authentication you'll need to enable [JWT support](https://s
 ## Usage
 
 ```
-python straw.py [--auth=<munge|jwt>] <slurmctld.domain.com> <major slurm version>
+usage: straw.py [-h] [--auth {munge,jwt}] [-o OUTPUT_DIR] [-v] [-V] [-l] server [server ...] version
+
+positional arguments:
+  server                slurmctld server in server[:port] notation
+  version               Slurm major version that corresponds to that of the slurmctld server (e.g. 22.05)
+
+options:
+  -h, --help            show this help message and exit
+  --auth {munge,jwt}    Authentication method (default: jwt)
+  -o OUTPUT_DIR, --output-dir OUTPUT_DIR
+                        Existing output directory where config files will be saved (default: ./)
+  -v, --verbose         Increase output verbosity. Rrepetitions allowed. (default: None)
+  -V, --version         show program's version number and exit
+  -l, --list            List available protocol versions (default: False)
 ```
 
-Where auth\_method is either`munge` or `jwt`. The default auth method is munge.  
+Where auth\_method is either`munge` or `jwt`. The `pymunge` import is conditional on using munge as authentication method, so if yo do not need munge, the library requirement is also not needed.  
 When using jwt authentication, the token will be grabbed from the `SLURM_JWT` environment variable.
 
 The Slurm version should include the major release (first two parts), e.g. `22.05`.
-
-Both the hostname of the slurmctld and the Slurm version are mandatory. The Slurm version should match that of
-the slurmctld server, as this will determine the Slurm protocol version that straw will use to communicate with the slurmctld.
+It should also match that of the slurmctld server, as this will determine the Slurm protocol version that straw will use to communicate with the slurmctld.
