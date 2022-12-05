@@ -8,10 +8,15 @@ import argparse
 import re
 import logging
 
-from dataclasses import dataclass
-from pymunge import MungeContext, UID_ANY, GID_ANY
+from dataclasses import dataclass, field
 from K12 import KangarooTwelve
 from struct import pack, unpack, calcsize
+try:
+    from pymunge import MungeContext, UID_ANY, GID_ANY
+except ImportError:
+    has_munge = False
+else:
+    has_munge = True
 
 SLURM_PROTOCOL_VERSION = {
         '22.05': (38 << 8) | 0,
@@ -25,6 +30,8 @@ PLUGIN_AUTH_MUNGE = 0x0065
 PLUGIN_AUTH_JWT = 0x0066
 REQUEST_CONFIG = 0x07df
 RESPONSE_CONFIG = REQUEST_CONFIG+1
+RESPONSE_SLURM_RC = 8001
+NO_VAL = 0xfffffffe
 
 protocol_version = None
 
@@ -34,6 +41,7 @@ def list_protocol_versions():
 
 @dataclass
 class Header:
+    # default values for packing the request_config msg
     protocol_version:  int = 0
     flags:             int = 0
     msg_type:          int = REQUEST_CONFIG
@@ -41,28 +49,6 @@ class Header:
     forward_cnt:       int = 0
     ret_cnt:           int = 0
     address_ss_family: int = 0
-
-    def pack(self):
-        if self.protocol_version >= SLURM_PROTOCOL_VERSION['22.05']:
-            header = pack('!HHHIHHH',
-                          self.protocol_version,
-                          self.flags,
-                          self.msg_type,
-                          self.body_length,
-                          self.forward_cnt,
-                          self.ret_cnt,
-                          self.address_ss_family)
-        elif self.protocol_version >= SLURM_PROTOCOL_VERSION['20.11']:
-             header = pack('!HHHHIHHH',
-                          self.protocol_version,
-                          self.flags,
-                          0,
-                          self.msg_type,
-                          self.body_length,
-                          self.forward_cnt,
-                          self.ret_cnt,
-                          self.address_ss_family)
-        return header
 
 
 @dataclass
@@ -74,8 +60,124 @@ class Auth:
     plugin_id: int = None
     cred: str = None
 
-    def _get_munge_cred(self, body):
+class Body:
+    pass
+
+@dataclass
+class RequestConfigBody(Body):
+    req_flags: int = 0x001
+
+    def pack(self):
+        return pack('!I', self.req_flags)
+
+@dataclass
+class ResponseConfigBody(Body):
+    config_files: list[tuple] = field(default_factory=list) # filename, content
+    spool_dir: str = None
+
+    def pack(self):
+        raise NotImplementedError('Responses are only unpacked, not packed')
+
+
+@dataclass
+class SlurmMessage:
+    """
+    A Slurm message consists of `header`, `auth`, and `body` payloads, in that order.
+    When packing a message, because they depend on each other (e.g. auth may need to create a hash of the body),
+    first the separate instances are created. Then, they can be pack()ed.
+    When unpacking a message, the binary `data` will be "walked", starting at offset 0,
+    unpacking header, auth, and body, also in that order.
+    """
+    data: bytes = None
+
+    header: Header = Header()
+    auth: Auth = Header()
+    body: Body = None
+
+    _unpack_offset: int = 0
+
+    def _unpack(self, fmt):
+        """
+        Akin to struct.unpack, but keep track of which bytes we've unpacked from self.data (in self._unpack_offset).
+        """
+        unpack_sz = calcsize(fmt)
+        res = unpack(fmt, self.data[self._unpack_offset:self._unpack_offset+unpack_sz])
+        self._unpack_offset += unpack_sz
+        return res
+
+    def _unpackstr(self):
+        """
+        Unpacks a string <uint32_t><str><\0>, where len of str is given by the first uint32_t size.
+        Keep track of the offset in self.data
+        """
+        str_len, = self._unpack('!I')
+        if (str_len > 0):
+            # str_len accounts for trailing '\0'
+            s = self.data[self._unpack_offset:self._unpack_offset+str_len-1]
+            self._unpack_offset += str_len
+            return s
+        else:
+            return None
+
+    def unpack_header(self):
+        self.header.protocol_version, = self._unpack('!H')
+        if self.header.protocol_version != protocol_version:
+            sys.exit(f'Protocol version response from server ({self.header.protocol_version}) is different to the protocol version requested ({protocol_version}).')
+        if protocol_version >= SLURM_PROTOCOL_VERSION['22.05']:
+            _, self.header.msg_type, self.header.body_length, _, _, _ = self._unpack('!HHIHHH')
+        elif protocol_version >= SLURM_PROTOCOL_VERSION['20.11']:
+            _, _, self.header.msg_type, self.header.body_length, _, _, _ = self._unpack('!HHHIHHH')
+
+    def unpack_auth(self):
+        self.auth.plugin_id, = self._unpack('!I')
+        if self.auth.plugin_id == PLUGIN_AUTH_MUNGE:
+            self.auth.cred = self._unpackstr()
+            logging.debug(f'Munge cred: {self.auth.cred}')
+        if self.auth.plugin_id == PLUGIN_AUTH_JWT:
+            token = self._unpackstr()
+            user = self._unpackstr()
+
+    def _unpack_list(self):
+        lst = []
+        config_file_count, = self._unpack('!I')
+        if config_file_count != NO_VAL:
+            for i in range(0, config_file_count):
+                file_exists, = self._unpack('B')
+                filename = self._unpackstr()
+                content = self._unpackstr()
+                logging.debug(f'filename: {filename}, exists: {bool(file_exists)}')
+                if file_exists:
+                    lst.append((filename, content))
+        return lst
+
+    def unpack_body(self):
+        if self.header.msg_type == RESPONSE_SLURM_RC:
+            # Uh oh, error!
+            rc, = self._unpack('!I')
+            if rc == 2010:
+                logging.error('Maybe you did not run as Slurm user or root (required for munge auth)?')
+            sys.exit(f'We got a reply with errno: {rc}')
+        elif self.header.msg_type == RESPONSE_CONFIG:
+            if self.header.protocol_version >= SLURM_PROTOCOL_VERSION['21.08']:
+                self.body = ResponseConfigBody()
+                logging.debug(f'Got a response body of length {self.header.body_length}:')
+                self.body.config_files = self._unpack_list()
+                self.body.spool_dir = self._unpackstr()
+            elif self.header.protocol_version >= SLURM_PROTOCOL_VERSION['20.11']:
+                raise NotImplementedError('Fetching config from Slurm 21.08 > version >= 20.11 not yet implemented')
+            else:
+                raise Exception(f'Server replied with unsupported protocol version: {self.header.protocol_version}')
+        
+
+    def unpack(self):
+        self._unpack_offset = 0
+        self.unpack_header()
+        self.unpack_auth()
+        self.unpack_body()
+
+    def _get_munge_cred(self):
         custom_string = pack('!H', REQUEST_CONFIG)
+        body = self.body.pack()
         logging.debug('custom str:')
         logging.debug(hexdump(custom_string))
         logging.debug('hash input:')
@@ -86,79 +188,78 @@ class Auth:
         with MungeContext() as ctx:
             ctx.uid_restriction = UID_ANY
             ctx.gid_restriction = GID_ANY
-            cred = ctx.encode(slurm_hash)
-        return cred
-
-    def pack(self, body):
-        if self.plugin_id == PLUGIN_AUTH_MUNGE:
-            try:
-                self.cred = self._get_munge_cred(body)
-            except Exception as err:
-                sys.exit(f'Failed to generate munge credential:\n{err}')
-            return pack('!II', self.plugin_id, len(self.cred)+1) + self.cred + b'\x00'
-        elif self.plugin_id == PLUGIN_AUTH_JWT:
-            # packstr(token) + packstr(NULL)
-            return pack('!II', self.plugin_id, len(self.cred)+1) + bytes(self.cred, 'utf-8') + b'\x00' + b'\x00\x00\x00\x00'
-
-
-@dataclass
-class Body:
-    req_flags: int = 0x001
+            self.auth.cred = ctx.encode(slurm_hash)
+        return self.auth.cred
 
     def pack(self):
-        return pack('!I', self.req_flags)
+        self.data = self.pack_header() + \
+                    self.pack_auth() +   \
+                    self.pack_body()
+        logging.debug(f'Full message: ({len(self.data)})')
+        logging.debug(hexdump(self.data))
+        return self.data
 
+    def pack_header(self):
+        if self.header.protocol_version >= SLURM_PROTOCOL_VERSION['22.05']:
+            header = pack('!HHHIHHH',
+                          self.header.protocol_version,
+                          self.header.flags,
+                          self.header.msg_type,
+                          self.header.body_length,
+                          self.header.forward_cnt,
+                          self.header.ret_cnt,
+                          self.header.address_ss_family)
+        elif self.header.protocol_version >= SLURM_PROTOCOL_VERSION['20.11']:
+             header = pack('!HHHHIHHH',
+                          self.header.protocol_version,
+                          self.header.flags,
+                          0,
+                          self.header.msg_type,
+                          self.header.body_length,
+                          self.header.forward_cnt,
+                          self.header.ret_cnt,
+                          self.header.address_ss_family)
+        logging.debug(f'Header ({len(header)}):')
+        logging.debug(hexdump(header))
+        return header
 
-@dataclass
-class SlurmMessage:
-    data: bytes
-
-    header: Header = Header()
-    auth: Auth = Header()
-    body: Body = Body()
-
-    _unpack_offset: int = 0
-
-    def unpack(self, fmt):
-        """
-        Akin to struct.unpack, but keep track of which bytes we've unpacked from self.data (in self._unpack_offset).
-        """
-        unpack_sz = calcsize(fmt)
-        res = unpack(fmt, self.data[self._unpack_offset:self._unpack_offset+unpack_sz])
-        self._unpack_offset += unpack_sz
-        return res
-
-    def unpackstr(self):
-        """
-        Unpacks a string <uint32_t><str><\0>, where len of str is given by the first uint32_t size.
-        Keep track of the offset in self.data
-        """
-        str_len, = self.unpack('!I')
-        if (str_len > 0):
-            # str_len accounts for trailing '\0'
-            s = self.data[self._unpack_offset:self._unpack_offset+str_len-1]
-            self._unpack_offset += str_len
-            return s
-        else:
-            return None
-
-    def unpack_header(self):
-        self.header.protocol_version, = self.unpack('!H')
-        if self.header.protocol_version != protocol_version:
-            sys.exit(f'Protocol version response from server ({self.header.protocol_version}) is different to the protocol version requested ({protocol_version}).')
-        if protocol_version >= SLURM_PROTOCOL_VERSION['22.05']:
-            _, self.header.msg_type, self.header.body_length, _, _, _ = self.unpack('!HHIHHH')
-        elif protocol_version >= SLURM_PROTOCOL_VERSION['20.11']:
-            _, _, self.header.msg_type, self.header.body_length, _, _, _ = self.unpack('!HHHIHHH')
-
-    def unpack_auth(self):
-        self.auth.plugin_id, = self.unpack('!I')
+    def pack_auth(self):
         if self.auth.plugin_id == PLUGIN_AUTH_MUNGE:
-            self.auth.cred = self.unpackstr()
-            logging.debug(f'Munge cred: {self.auth.cred}')
-        if self.auth.plugin_id == PLUGIN_AUTH_JWT:
-            token = self.unpackstr()
-            user = self.unpackstr()
+            try:
+                self.auth.cred = self._get_munge_cred()
+            except Exception as err:
+                sys.exit(f'Failed to generate munge credential:\n{err}')
+            auth = pack('!II', self.auth.plugin_id, len(self.auth.cred)+1) + self.auth.cred + b'\x00'
+        elif self.auth.plugin_id == PLUGIN_AUTH_JWT:
+            # packstr(token) + packstr(NULL)
+            auth = pack('!II', self.auth.plugin_id, len(self.auth.cred)+1) + bytes(self.auth.cred, 'utf-8') + b'\x00' + b'\x00\x00\x00\x00'
+        logging.debug(f'Auth: ({len(auth)})')
+        logging.debug(hexdump(auth))
+        return auth
+
+    def pack_body(self):
+        body = self.body.pack()
+        logging.debug(f'Body: ({len(body)})')
+        logging.debug(hexdump(body))
+        return body
+
+    def RequestConfigMsg(self, protocol_version, auth_method):
+        self.header = Header(protocol_version=protocol_version)
+        self.body = RequestConfigBody()
+        logging.info(f'Using authentication method: {auth_method}')
+        if auth_method == 'jwt':
+            try:
+                token = os.environ['SLURM_JWT']
+            except:
+                sys.exit('Auth method jwt requested but SLURM_JWT undefined')
+            self.auth = Auth(cred=token, plugin_id=PLUGIN_AUTH_JWT)
+        else:
+            if not has_munge:
+                sys.exit('Auth method munge requested, but pymunge not available')
+            self.auth = Auth(plugin_id=PLUGIN_AUTH_MUNGE)
+        payload = self.pack()
+        return payload
+
 
 
 def hexdump(data):
@@ -223,43 +324,17 @@ def send_recv(server, payload):
 
 def parse_msg(data):
     msg = SlurmMessage(data=data)
-    msg.unpack_header()
-    msg.unpack_auth()
-    #h = Header().unpack(msg[:16], protocol_version)
-    #a = Auth(data=msg[16:]).parse()
-    if msg.header.msg_type != RESPONSE_CONFIG:
-        sys.exit(f'Response type ({msg.header.msg_type}) not what we expected ({RESPONSE_CONFIG}). Make sure you run as slurm user or root')
-    logging.debug(f'Got a response body of length {msg.header.body_length}:')
-    return b''
+    msg.unpack()
+    return msg
 
-def save_config(response):
-    pass
+def save_config(msg):
+    logging.debug(f'spool dir: {msg.body.spool_dir}')
+    for file in msg.body.config_files:
+        logging.debug(f'filename: {file[0]}\ncontent: {file[1]}')
 
 def fetch_config(servers, auth):
     logging.debug(f'Using protocol version: {protocol_version}')
-    h = Header(protocol_version=protocol_version)
-    logging.debug(repr(h))
-    header = Header(protocol_version=protocol_version).pack()
-    body = Body().pack()
-    logging.info(f'Using authentication method: {auth}')
-    if auth == 'jwt':
-        try:
-            token = os.environ['SLURM_JWT']
-        except:
-            sys.exit('Auth method jwt requested but SLURM_JWT undefined')
-        auth = Auth(cred=token, plugin_id=PLUGIN_AUTH_JWT).pack(body)
-    else:
-        auth = Auth(plugin_id=PLUGIN_AUTH_MUNGE).pack(body)
-    logging.debug(f'Header ({len(header)}):')
-    logging.debug(hexdump(header))
-    logging.debug(f'Auth: ({len(auth)})')
-    logging.debug(hexdump(auth))
-    logging.debug(f'Body: ({len(body)})')
-    logging.debug(hexdump(body))
-    payload = header + auth + body
-    payload_msg = pack('!I', len(payload)) + payload
-    logging.debug(f'Full message: ({len(payload_msg)})')
-    logging.debug(hexdump(payload_msg))
+    payload = SlurmMessage().RequestConfigMsg(protocol_version=protocol_version, auth_method=auth)
     response_msg = None
     for server in servers:
         try:
@@ -275,10 +350,8 @@ def fetch_config(servers, auth):
         sys.exit('Unable to connect and no more servers to try')
 
     logging.debug(hexdump(response_msg))
-    response = parse_msg(response_msg)
-    logging.debug('Response raw:')
-    logging.debug(hexdump(response))
-    save_config(response)
+    slurm_msg = parse_msg(response_msg)
+    save_config(slurm_msg)
 
 def parse_args():
     def major_version_match(arg):
