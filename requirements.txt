@@ -1,3 +1,2 @@
-Cython
 dataclasses; python_version < '3.7'
 pymunge==0.1.3
