@@ -24,6 +24,20 @@ you must choose between either a *configless* setup, or a munge *secretless* set
 
 *Secretless setup* refers to not needing to share the secret munge key with your environment.
 
+For instance, you may want to connect some notebook service that is exposed to the internet to your Slurm cluster. In this situation, you might prefer not to keep the Slurm munge key in the public noteboko service that's exposed to the wider Internet.
+
+```
+   D M Z       firewall
+                  │
+┌────────────┐    │    ┌───────────┐
+│            │    │    │           │
+│  Public    │    │    │  Private  │
+│  notebook  │    │    │  Slurm    │
+│  service   │    │    │  cluster  │
+│            │    │    │           │
+└────────────┘    │    └───────────┘
+```
+
 One way to go munge-secretless is to rely on JWT tokens (which arguably are a secret, but where the risk implications are much lower than the munge key).
 However, Slurm tools can not use JWT tokens and configless mode simultaneously.
 And while it is possible to use JWT in combination with a minimalistic slurm.conf with just the `SlurmctldHost` and `Clustername`,
@@ -69,7 +83,7 @@ options:
   -l, --list            List available protocol versions (default: False)
 ```
 
-Where auth\_method is either`munge` or `jwt`. The `pymunge` import is conditional on using munge as authentication method, so if yo do not need munge, the library requirement is also not needed.  
+Where auth\_method is either `munge` or `jwt`. The `pymunge` import is conditional on using munge as authentication method, so if yo do not need munge, the library requirement is also not needed.
 When using jwt authentication, the token will be grabbed from the `SLURM_JWT` environment variable.
 
 The Slurm version should include the major release (first two parts), e.g. `22.05`.
