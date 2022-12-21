@@ -9,7 +9,7 @@ import re
 import logging
 
 from dataclasses import dataclass, field
-from K12 import KangarooTwelve
+from vendor.K12 import KangarooTwelve
 from struct import pack, unpack, calcsize
 try:
     from pymunge import MungeContext, UID_ANY, GID_ANY

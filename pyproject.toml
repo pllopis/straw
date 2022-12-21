@@ -10,3 +10,6 @@ dependencies = [
 
 [project.optional-dependencies]
 munge = ["pymunge==0.1.3"]
+
+[project.scripts]
+straw = 'straw:main'
