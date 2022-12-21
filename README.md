@@ -64,6 +64,16 @@ If you're using munge to authenticate, you must run this tool as either
 the Slurm user, or root. The slurmctld needs to have [configless mode](https://slurm.schedmd.com/configless_slurm.html) enabled as well.  
 Optionally, for JWT authentication you'll need to enable [JWT support](https://slurm.schedmd.com/jwt.html) in your slurmctld.
 
+## Building
+
+If you have python >= 3.7 and do not need munge support, you can just grab straw.py, no other dependencies are required!  
+
+If you'd like to have munge as well, or have python version<3.7, or you just want to manage this as a package, you can just pip install this repo (leave out `[munge]` if you do not want it):
+
+```
+pip install "straw[munge] @ git+https://github.com/pllopis/straw"
+```
+
 ## Usage
 
 ```

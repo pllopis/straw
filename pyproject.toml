@@ -1,0 +1,12 @@
+[project]
+name = "straw"
+version = "0.1"
+readme = "README.md"
+keywords = ["slurm"]
+license = {text = "BSD 3-Clause License"}
+dependencies = [
+	'dataclasses; python_version < "3.7"',
+]
+
+[project.optional-dependencies]
+munge = ["pymunge==0.1.3"]
