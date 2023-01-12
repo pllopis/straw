@@ -24,7 +24,7 @@ you must choose between either a *configless* setup, or a munge *secretless* set
 
 *Secretless setup* refers to not needing to share the secret munge key with your environment.
 
-For instance, you may want to connect some notebook service that is exposed to the internet to your Slurm cluster. In this situation, you might prefer not to keep the Slurm munge key in the public noteboko service that's exposed to the wider Internet.
+For instance, you may want to connect some notebook service that is exposed to the internet to your Slurm cluster. In this situation, you might prefer not to keep the Slurm munge key in the public notebook service that's exposed to the wider Internet.
 
 ```
    D M Z       firewall
